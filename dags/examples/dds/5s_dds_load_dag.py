@@ -88,7 +88,7 @@ def sprint5_dds_load_dag():
     fcts_dict_delivery = load_dm_fcts_delivery()
 
 
-    [users_dict,restaurants_dict,couriers_dict,timestamps_dict,products_dict]>>orders_dict>>fcts_dict>>fcts_dict_delivery
+    [users_dict,restaurants_dict,couriers_dict,timestamps_dict,products_dict]>>orders_dict>>fcts_dict_delivery
 
 
 stg_bonus_system_users_dag = sprint5_dds_load_dag()
