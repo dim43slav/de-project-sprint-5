@@ -1,6 +1,6 @@
 import requests
 from lib import PgConnect
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 
 
@@ -56,6 +56,29 @@ class Loader:
 
         return current_setting
 
+    def set_last_ts(self,workflow_key, cursor, tablename,to_ts):
+        current_setting_json = {"last_loaded_ts": to_ts}
+
+
+        cursor.execute(
+        """
+            DELETE FROM stg.srv_wf_settings
+            where workflow_key = %s
+        """,
+        (workflow_key, )
+        )
+
+
+        cursor.execute(
+        """
+            INSERT INTO stg.srv_wf_settings(workflow_key,workflow_settings)
+            VALUES(%s,%s)
+        """,
+        (workflow_key,json.dumps(current_setting_json,ensure_ascii=False))
+        )
+
+        return to_ts
+
     def load_restaurants(self,data,cursor):
         for item in data:
                 cursor.execute(
@@ -76,11 +99,22 @@ class Loader:
                     (item['_id'],json.dumps(item,ensure_ascii=False),self.ts)
                 )
 
-    def data_get(self,sort_field,sort_direction,limit,offset,method,step, dwh_dest, is_empty_response):
+    def load_deliveries(self,data,cursor):
+        for item in data:
+            print()
+            cursor.execute(
+                """
+                    INSERT INTO stg.deliveries(order_id,order_ts,delivery_id,courier_id,address,delivery_ts,rate,tip_sum,sum)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s,%s, %s)
+                """,
+                (item['order_id'],item['order_ts'],item['delivery_id'],item['courier_id'],item['address'],item['delivery_ts'],item['rate'],item['tip_sum'],item['sum'])
+            )
+
+    def data_get(self,sort_field,sort_direction,limit,offset,method,step, dwh_dest, is_empty_response, from_ts, to_ts):
         headers = self.headers
         params = self.params
         url = self.url
-        response = requests.get(f'{url}{method}?sort_field={sort_field}&sort_direction={sort_direction}&limit={limit}&offset={offset}', params=params, headers=headers)
+        response = requests.get(f'{url}{method}?&from={from_ts}&to={to_ts}&sort_field={sort_field}&sort_direction={sort_direction}&limit={limit}&offset={offset}', params=params, headers=headers)
 
         return response, is_empty_response
 
@@ -95,6 +129,8 @@ class Loader:
         method = 'restaurants'
         tablename = 'restaurants'
         workflow_key = 'project_restaurants_origin_to_stg'
+        from_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        to_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         conn = dwh_dest.get_conn()
         cursor = conn.cursor()
@@ -108,7 +144,7 @@ class Loader:
 
         #Получаем data из источника
         while is_empty_response != 1:
-            response = self.data_get(sort_field,sort_direction,limit,offset,method,step,dwh_dest,is_empty_response)
+            response = self.data_get(sort_field,sort_direction,limit,offset,method,step,dwh_dest,is_empty_response, from_ts, to_ts)
             if response[0].text.strip() == '[]':
                 break
             data = response[0].json()
@@ -117,8 +153,8 @@ class Loader:
             #грузим data в бд
             self.load_restaurants(data, cursor)
 
-            current_setting = self.set_last_id(workflow_key, cursor, tablename)
-            print(f'loaded {current_setting} rows in stg.{tablename}')
+        current_setting = self.set_last_id(workflow_key, cursor, tablename)
+        print(f'{current_setting} rows in stg.{tablename}')
 
         conn.commit()
         cursor.close()
@@ -136,6 +172,8 @@ class Loader:
         method = 'couriers'
         tablename = 'couriers'
         workflow_key = 'project_couriers_origin_to_stg'
+        from_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        to_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         conn = dwh_dest.get_conn()
         cursor = conn.cursor()
@@ -149,20 +187,18 @@ class Loader:
 
         #Получаем data из источника
         while is_empty_response != 1:
-            response = self.data_get(sort_field,sort_direction,limit,offset,method,step,dwh_dest,is_empty_response)
+            response = self.data_get(sort_field,sort_direction,limit,offset,method,step,dwh_dest,is_empty_response, from_ts, to_ts)
             if response[0].text.strip() == '[]':
                 break
             data = response[0].json()
             offset = offset + step
+            print(response[0].json())
 
             #грузим data в бд
-            self.load_restaurants(data, cursor)
+            self.load_couriers(data, cursor)
 
-            current_setting = self.set_last_id(workflow_key, cursor, tablename)
-            print(f'loaded {current_setting} rows in stg.{tablename}')
-
-        #грузим data в бд
-        self.load_couriers(data, cursor)
+        current_setting = self.set_last_id(workflow_key, cursor, tablename)
+        print(f'{current_setting} rows in stg.{tablename}')
 
         conn.commit()
         cursor.close()
@@ -170,16 +206,48 @@ class Loader:
 
         return 'couriers loaded'
 
-    def get_deliveries(self):
-        sort_field = 'id'
+    def get_deliveries(self, dwh_dest):
+        sort_field = '_id'
         sort_direction = 'asc'
-        limit = 10
+        limit = 1000
         offset = 0
-        step = 100
+        step = 1000
+        is_empty_response = 0
         method = 'deliveries'
+        tablename = 'deliveries'
+        workflow_key = 'project_deliveries_origin_to_stg'
+        to_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        message = self.stg_loader(self,sort_field,sort_direction,limit,offset,method,step)
-        return message
+        conn = dwh_dest.get_conn()
+        cursor = conn.cursor()
+
+        wf_setting = self.get_last_id(workflow_key, cursor)
+        if not wf_setting:
+            from_ts = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            from_ts = wf_setting[0][0]['last_loaded_ts']
+            print(f'from_ts = {from_ts}')
+
+        #Получаем data из источника
+        while is_empty_response != 1:
+            response = self.data_get(sort_field,sort_direction,limit,offset,method,step,dwh_dest,is_empty_response, from_ts, to_ts)
+            if response[0].text.strip() == '[]':
+                break
+            data = response[0].json()
+            offset = offset + step
+            print(response[0].json())
+
+            #грузим data в бд
+            self.load_deliveries(data, cursor)
+
+        current_setting = self.set_last_ts(workflow_key, cursor, tablename,to_ts)
+        print(f'{current_setting} rows in stg.{tablename}')
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return 'deliveries loaded'
 
 
     #print(get_couriers())

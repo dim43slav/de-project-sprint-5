@@ -8,6 +8,7 @@ from psycopg import Connection
 from psycopg.rows import class_row
 from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional
 
 
 class OrderObj(BaseModel):
@@ -17,6 +18,7 @@ class OrderObj(BaseModel):
     user_id: int
     restaurant_id: int
     timestamp_id: int
+    courier_id: Optional[int] = None
 
 
 class OrdersOriginRepository:
@@ -31,9 +33,10 @@ class OrdersOriginRepository:
                         o.id as id
                         ,o.object_id as order_key
                         ,o.object_value::json->>'final_status' as order_status
+                        ,ur.id as user_id
                         ,dr.id as restaurant_id
                         ,dt.id as timestamp_id
-                        ,ur.id as user_id
+                        ,c.id as courier_id
                     from
                         stg.ordersystem_orders o
                     join dds.dm_restaurants dr
@@ -44,6 +47,12 @@ class OrdersOriginRepository:
                         ur.user_id = o.object_value::json->'user'->>'id'
                     join dds.dm_timestamps dt
                         on dt.ts::timestamp = (o.object_value::json->>'date')::timestamp
+                    left join stg.deliveries sd 
+                        on 
+                        sd.order_id = o.object_id
+                    left join stg.couriers c 
+                        on 
+                        c.object_id = sd.courier_id
                     WHERE o.id > %(threshold)s --Пропускаем те объекты, которые уже загрузили.
                     ORDER BY o.id ASC --Обязательна сортировка по id, т.к. id используем в качестве курсора.
                     LIMIT %(limit)s; --Обрабатываем только одну пачку объектов.
@@ -62,22 +71,24 @@ class OrderDestRepository:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                    INSERT INTO dds.dm_orders(order_key,order_status,user_id,restaurant_id,timestamp_id)
-                    VALUES (%(order_key)s, %(order_status)s, %(user_id)s,%(restaurant_id)s,%(timestamp_id)s)
+                    INSERT INTO dds.dm_orders(order_key,order_status,user_id,restaurant_id,timestamp_id,courier_id)
+                    VALUES (%(order_key)s, %(order_status)s, %(user_id)s,%(restaurant_id)s,%(timestamp_id)s,%(courier_id)s)
                     ON CONFLICT (id) DO UPDATE
                     SET
                         order_key = EXCLUDED.order_key,
                         order_status = EXCLUDED.order_status,
                         user_id = EXCLUDED.user_id,
                         restaurant_id = EXCLUDED.restaurant_id,
-                        timestamp_id = EXCLUDED.timestamp_id;
+                        timestamp_id = EXCLUDED.timestamp_id,
+                        courier_id = EXCLUDED.courier_id;
                 """,
                 {
                     "order_key": order.order_key,
                     "order_status": order.order_status,
                     "user_id": order.user_id,
                     "restaurant_id": order.restaurant_id,
-                    "timestamp_id": order.timestamp_id
+                    "timestamp_id": order.timestamp_id,
+                    "courier_id": order.courier_id
                 },
             )
 

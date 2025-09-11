@@ -580,6 +580,36 @@ join dds.dm_users ur
     on
     ur.user_id = o.object_value::json->'user'->>'id'
 
+    
+drop table if exists stg.bonussystem_ranks;
+    
+CREATE TABLE IF NOT EXISTS stg.bonussystem_ranks (
+    id INTEGER NOT NULL PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    bonus_percent NUMERIC(19, 5) DEFAULT 0 NOT NULL CHECK (bonus_percent >= 0),
+    min_payment_threshold NUMERIC(19, 5) DEFAULT 0 NOT NULL CHECK (min_payment_threshold >= 0)
+);
+
+
+drop table if exists stg.bonussystem_users;
+
+CREATE TABLE if not exists stg.bonussystem_users (
+	id int4 NOT NULL,
+	order_user_id text NOT NULL,
+	CONSTRAINT bonussystem_users_pkey PRIMARY KEY (id)
+);
+
+
+DROP TABLE stg.bonussystem_events;
+
+CREATE TABLE stg.bonussystem_events (
+	id int4 NOT null primary KEY,
+	event_ts timestamp NOT NULL,
+	event_type varchar NOT NULL,
+	event_value text NOT NULL
+);
+CREATE INDEX idx_bonussystem_events__event_ts ON stg.bonussystem_events USING btree (event_ts);
+
 
 DROP TABLE if exists dds.dm_restaurants cascade;
 DROP TABLE if exists dds.dm_timestamps cascade;
@@ -588,9 +618,21 @@ DROP TABLE if exists dds.srv_wf_settings cascade;
 DROP TABLE if exists dds.dm_orders cascade;
 DROP TABLE if exists dds.dm_products cascade;
 DROP TABLE if exists dds.fct_product_sales cascade;
+drop table if exists dds.fct_deliveries cascade;
+drop table if exists dds.dm_couriers cascade;
 -- dds.dm_restaurants definition
 
 -- Drop table
+
+
+
+drop table if exists dds.dm_couriers;
+CREATE TABLE dds.dm_couriers (
+    id SERIAL PRIMARY KEY,
+    courier_id VARCHAR NOT NULL,
+    name VARCHAR NOT NULL
+);
+
 
 -- DROP TABLE dds.dm_restaurants cascade;
 
@@ -668,11 +710,15 @@ CREATE TABLE dds.dm_orders (
 	user_id int4 NOT NULL,
 	restaurant_id int4 NOT NULL,
 	timestamp_id int4 NOT NULL,
-	CONSTRAINT dm_orders_pkey PRIMARY KEY (id),
-	CONSTRAINT dm_orders_restaurant_id_fk FOREIGN KEY (restaurant_id) REFERENCES dds.dm_restaurants(id),
-	CONSTRAINT dm_orders_timestamp_id_fk FOREIGN KEY (timestamp_id) REFERENCES dds.dm_timestamps(id),
-	CONSTRAINT dm_orders_user_id_fk FOREIGN KEY (user_id) REFERENCES dds.dm_users(id)
+	courier_id int4,
+	CONSTRAINT dm_orders_pkey PRIMARY KEY (id)
 );
+-- dds.dm_orders внешние включи
+
+ALTER TABLE dds.dm_orders ADD CONSTRAINT dm_orders_courier_id_fkey FOREIGN KEY (courier_id) REFERENCES dds.dm_couriers(id);
+ALTER TABLE dds.dm_orders ADD CONSTRAINT dm_orders_restaurant_id_fk FOREIGN KEY (restaurant_id) REFERENCES dds.dm_restaurants(id);
+ALTER TABLE dds.dm_orders ADD CONSTRAINT dm_orders_timestamp_id_fk FOREIGN KEY (timestamp_id) REFERENCES dds.dm_timestamps(id);
+ALTER TABLE dds.dm_orders ADD CONSTRAINT dm_orders_user_id_fk FOREIGN KEY (user_id) REFERENCES dds.dm_users(id);
 
 
 -- dds.dm_products definition
@@ -720,54 +766,124 @@ CREATE TABLE dds.fct_product_sales (
 	CONSTRAINT fct_product_sales_product_id_fk FOREIGN KEY (product_id) REFERENCES dds.dm_products(id)
 );
 
-{"_id": "687cb063a0ac572440d75432",
-"bonus_grant": 30,
-"bonus_payment": 306,
-"cost": 900,
-"date": "2025-07-20 09:01:23",
+
+id,order_id,courier_id,delivery_ts,address,rate,tip_sum,total_sum
+
+
+drop table if exists dds.fct_deliveries;
+CREATE TABLE dds.fct_deliveries (
+    id SERIAL PRIMARY KEY,
+    order_id INT NOT NULL REFERENCES dds.dm_orders (id),
+    courier_id INT REFERENCES dds.dm_couriers (id),
+    delivery_ts TIMESTAMP,
+    address VARCHAR ,
+    rate SMALLINT default 0 CHECK (rate >= 1 AND rate <= 5),
+    tip_sum NUMERIC(14, 2) DEFAULT 0 CHECK (tip_sum >= 0),
+    total_sum NUMERIC(14,2) not null default 0 check (total_sum >=0)
+);
+
+
+
+insert into dds.dm_orders 
+
+select
+                        o.id as id
+                        ,o.object_id as order_key
+                        ,o.object_value::json->>'final_status' as order_status
+                        ,dr.id as restaurant_id
+                        ,dt.id as timestamp_id
+                        ,ur.id as user_id
+                        ,c.id as courier_id
+                    from
+                        stg.ordersystem_orders o
+                    join dds.dm_restaurants dr
+                        on
+                        dr.restaurant_id = o.object_value::json->'restaurant'->>'id'
+                    join dds.dm_users ur
+                        on
+                        ur.user_id = o.object_value::json->'user'->>'id'
+                    join dds.dm_timestamps dt
+                        on dt.ts::timestamp = (o.object_value::json->>'date')::timestamp
+                    left join stg.deliveries sd 
+                        on 
+                        sd.order_id = o.object_id
+                    left join stg.couriers c on c.object_id = sd.courier_id
+
+              select * from stg.deliveries d ;          
+                        
+                 
+              
+with fct as(
+    select 
+        id
+        ,object_value::json->>'_id' as order_id
+        ,json_array_elements(object_value::json->'order_items')->>'quantity' as count
+        ,json_array_elements(object_value::json->'order_items')->>'price' as price
+    from stg.ordersystem_orders o),
+    pre_agg as(
+    select 
+        fct.id
+        ,o.id as order_id
+        ,o.courier_id
+        ,d.delivery_ts
+        ,d.address
+        ,d.rate
+        ,d.tip_sum
+        ,sum(fct.count::numeric * fct.price::numeric) as total_sum
+    from fct
+    join dds.dm_orders o on o.order_key = fct.order_id
+    left join stg.deliveries d on d.order_id = o.order_key
+    group by fct.id
+        ,o.id
+        ,o.courier_id
+        ,d.delivery_ts
+        ,d.address
+        ,d.rate
+        ,d.tip_sum)
+    select
+        id
+        ,order_id
+        ,courier_id
+        ,delivery_ts
+        ,address
+        ,rate
+        ,tip_sum
+        ,total_sum
+    from pre_agg
+    
+    
+    
+select * from stg.deliveries;
+select * from dds.dm_orders do2;
+    
+
+{"_id": "68958497a176115892c5131e",
+"bonus_grant": 452,
+"bonus_payment": 15,
+"cost": 4540,
+"date": "2025-08-08 05:01:11",
 "final_status": "CLOSED",
-"order_items": [{"id": "845d42f8af7705492d2d576a",
-"name": "Хинкали с креветкой Том Ям 3 шт",
-"price": 450,
-"quantity": 2 }],
-"payment": 900,
-"restaurant": {"id": "a51e4e31ae4602047ec52534" },
-"statuses": [{"dttm": "2025-07-20 09:01:23",
+"order_items": [{"id": "e0f74cc69658b5b3fd721a6e",
+"name": "Казан кебаб с бараниной",
+"price": 520,
+"quantity": 2 },
+{"id": "bfdf489791e9bc1eb3eefbf5",
+"name": "Лагман",
+"price": 350,
+"quantity": 10 }],
+"payment": 4540,
+"restaurant": {"id": "ebfa4c9b8dadfc1da37ab58d" },
+"statuses": [{"dttm": "2025-08-08 05:01:11",
 "status": "CLOSED" },
-{"dttm": "2025-07-20 08:42:02",
+{"dttm": "2025-08-08 04:03:55",
 "status": "DELIVERING" },
-{"dttm": "2025-07-20 08:35:59",
+{"dttm": "2025-08-08 03:17:35",
 "status": "COOKING" },
-{"dttm": "2025-07-20 08:03:07",
+{"dttm": "2025-08-08 02:43:08",
 "status": "OPEN" }],
-"update_ts": "2025-07-20 09:01:23",
-"user": {"id": "626a81ce9a8cd1920641e29c" }}
+"update_ts": "2025-08-08 05:01:11",
+"user": {"id": "626a81ce9a8cd1920641e261" }}
 
-
-{"user_id": 15,
-"order_id": "687c98df3d30ffc531936a08",
-"order_date": "2025-07-20 07:21:03",
-"product_payments": [{"product_id": "6276e8cd0cf48b4cded00879",
-"product_name": "\u0420\u041e\u041b\u041b \u0421 \u0420\u042b\u0411\u041e\u0419 \u0418 \u0421\u041e\u0423\u0421\u041e\u041c \u0422\u0410\u0420\u0422\u0410\u0420",
-"price": 180,
-"quantity": 2,
-"product_cost": 360,
-"bonus_payment": 360,
-"bonus_grant": 0 },
-{"product_id": "6276e8cd0cf48b4cded0087a",
-"product_name": "\u041d\u041e\u0420\u0412\u0415\u0416\u0421\u041a\u0418\u0419 \u0421\u042d\u041d\u0414\u0412\u0418\u0427 \u0421 \u0420\u042b\u0411\u041e\u0419 \u0418 \u042f\u0419\u0426\u041e\u041c",
-"price": 180,
-"quantity": 3,
-"product_cost": 540,
-"bonus_payment": 159.0,
-"bonus_grant": 38 },
-{"product_id": "6276e8cd0cf48b4cded0086f",
-"product_name": "\u0420\u041e\u041b\u041b \u0421 \u041a\u0423\u0420\u0418\u0426\u0415\u0419 \u0418 \u041f\u0415\u0421\u0422\u041e",
-"price": 120,
-"quantity": 2,
-"product_cost": 240,
-"bonus_payment": 0.0,
-"bonus_grant": 24 }]}
 
 with fct as(
 select 
@@ -1107,25 +1223,150 @@ update_ts timestamp);
 
 
 
-[{'_id': '0419r76bmvtu6oqfbgy4dqg',
-'name': 'Олег Попов' },
-{'_id': '0z0l6euhw9tnbxpfqd4bqjr',
-'name': 'Елизавета Алексеева' },
-{'_id': '0zgssl27ywa5908ncp3j97p',
-'name': 'Геннадий Сидоров' },
-{'_id': '12lbru1m361sbfsnc0cnojj',
-'name': 'Иван Попов' },
-{'_id': '14m6pf9pheim2h8o20du6m1',
-'name': 'Екатерина Морозова' },
-{'_id': '17zo8nevp1o7sqrn387as0t',
-'name': 'Оксана Орлова' },
-{'_id': '19en2do5lsjwhv9c15pzcj3',
-'name': 'Олег Петров' },
-{'_id': '1utfrcg8sru6pqc12qimxwx',
-'name': 'Евгений Новиков' },
-{'_id': '1vn1559r630b1ynorhfhi31',
-'name': 'Снежанна Волкова' },
-{'_id': '3t4eho9g3dle9ugl80ojqsa',
-'name': 'Евгений Петров' }]
+delete from stg.srv_wf_settings where workflow_key in ('project_restaurants_origin_to_stg','project_couriers_origin_to_stg');
 
+
+
+drop table if exists stg.deliveries;
+create table stg.deliveries(
+	id serial primary key
+	,order_id varchar(40)
+	,order_ts timestamp
+	,delivery_id varchar(40)
+	,courier_id varchar(40)
+	,address varchar
+	,delivery_ts timestamp
+	,rate smallint
+	,tip_sum numeric(12,2)
+	,sum numeric(12,2)
+);
+
+delete from stg.srv_wf_settings where workflow_key = 'project_deliveries_origin_to_stg'
+
+select * from stg.deliveries d ;
+
+order_ts,delivery_id,courier_id,address,delivery_ts,rate,tip_sum,sum
+
+select * from stg.couriers;
+
+
+
+
+
+ALTER TABLE dds.dm_orders
+ADD COLUMN courier_id INT REFERENCES dds.dm_couriers (id);
+
+
+
+
+
+CREATE TABLE cdm.dm_courier_ledger (
+    id SERIAL PRIMARY KEY,
+    courier_id VARCHAR NOT NULL,
+    courier_name VARCHAR NOT NULL,
+    settlement_year SMALLINT NOT NULL
+        CHECK (settlement_year >= 2022 AND settlement_year < 2500),
+    settlement_month SMALLINT NOT NULL
+        CHECK (settlement_month >= 1 AND settlement_month <= 12),
+    orders_count INT NOT NULL
+        CHECK (orders_count >= 0),
+    orders_total_sum NUMERIC(14, 2) NOT NULL DEFAULT 0
+        CHECK (orders_total_sum >= 0),
+    rate_avg NUMERIC(4, 2) NOT NULL DEFAULT 0
+        CHECK (rate_avg >= 0 AND rate_avg <= 5),
+    order_processing_fee NUMERIC(14, 2) NOT NULL DEFAULT 0
+        CHECK (order_processing_fee >= 0),
+    courier_order_sum NUMERIC(14, 2) NOT NULL DEFAULT 0
+        CHECK (courier_order_sum >= 0),
+    courier_tips_sum NUMERIC(14, 2) NOT NULL DEFAULT 0
+        CHECK (courier_tips_sum >= 0),
+    courier_reward_sum NUMERIC(14, 2) NOT NULL DEFAULT 0
+        CHECK (courier_reward_sum >= 0),
+    UNIQUE (courier_id, settlement_year, settlement_month)
+);
+
+
+select * from dds.dm_orders where courier_id is not null;
+
+
+
+with month_agg as(
+select
+	dc.id
+	,dc.name as courier_name
+	,dt."year"
+	,dt.month
+	,count(f.order_id) as orders_count
+	,sum(f.total_sum) as orders_total_sum
+	,avg(f.rate) as rate_avg
+	,sum(f.total_sum) * 0.25 as order_processing_fee
+	,null as courier_order_sum
+	,sum(f.tip_sum) as courier_tips_sum
+	,null as courier_reward_sum
+from dds.fct_deliveries f
+join dds.dm_orders o on o.id = f.order_id
+join dds.dm_couriers dc on dc.id = o.courier_id
+join dds.dm_timestamps dt on dt.id = o.timestamp_id
+group by 
+	dc.id
+	,dc.name
+	,dt."year"
+	,dt.month),
+coeff as(
+	select
+		id
+		,courier_name
+		,"year"
+		,month
+		,orders_count
+		,orders_total_sum
+		,rate_avg
+		,order_processing_fee
+		,case when rate_avg < 4 then 0.05
+		when rate_avg >= 4 and rate_avg < 4.5 then 0.07
+		when rate_avg < 4.9 and rate_avg >= 4.5 then 0.08
+		when rate_avg >= 4.9 then 0.1 end as coeff
+		,null as courier_order_sum
+		,courier_tips_sum
+		,null as courier_reward_sum
+	from month_agg)
+		select
+			id
+			,courier_name
+			,"year"
+			,month
+			,orders_count
+			,orders_total_sum
+			,rate_avg
+			,order_processing_fee
+			,orders_total_sum * coeff as courier_order_sum
+			,courier_tips_sum
+			,case when coeff = 0.05 then greatest(orders_total_sum * coeff + courier_tips_sum*0.95,100) 
+				when coeff = 0.07 then greatest(orders_total_sum * coeff + courier_tips_sum*0.95,150)  
+				when coeff = 0.08 then greatest(orders_total_sum * coeff + courier_tips_sum*0.95,175) 
+				when coeff = 0.1 then greatest(orders_total_sum * coeff + courier_tips_sum*0.95,200)  
+			end as courier_reward_sum
+		from coeff
+	
+
+r < 4 — 5% от заказа, но не менее 100 р.;
+4 <= r < 4.5 — 7% от заказа, но не менее 150 р.;
+4.5 <= r < 4.9 — 8% от заказа, но не менее 175 р.;
+4.9 <= r — 10% от заказа, но не менее 200 р.
+
+
+
+id
+
+courier_id
+courier_name
+settlement_year
+settlement_month
+orders_count
+orders_total_sum
+rate_avg
+order_processing_fee
+courier_order_sum
+courier_tips_sum
+courier_reward_sum
 

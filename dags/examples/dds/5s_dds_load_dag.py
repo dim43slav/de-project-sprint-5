@@ -8,6 +8,8 @@ from examples.dds.dds_timestamps_loader import TimestampLoader
 from examples.dds.dds_products_loader import ProductLoader
 from examples.dds.dds_orders_loader import OrderLoader
 from examples.dds.dds_fcts_loader import FctLoader
+from examples.dds.dds_fcts_loader_delivery import FctLoader_delivery
+from examples.dds.dds_couriers_loader import CourierLoader
 from lib import ConnectionBuilder
 
 log = logging.getLogger(__name__)
@@ -42,6 +44,13 @@ def sprint5_dds_load_dag():
         rest_loader.load_restaurants()  # Вызываем функцию, которая перельет данные.
     restaurants_dict = load_dm_restaurants()
 
+    @task(task_id="dm_couriers_load")
+    def load_dm_couriers():
+        # создаем экземпляр класса, в котором реализована логика.
+        rest_loader = CourierLoader(origin_pg_connect, dwh_pg_connect, log)
+        rest_loader.load_couriers()  # Вызываем функцию, которая перельет данные.
+    couriers_dict = load_dm_couriers()
+
     @task(task_id="dm_timestamps_load")
     def load_dm_timestamps():
         # создаем экземпляр класса, в котором реализована логика.
@@ -71,8 +80,15 @@ def sprint5_dds_load_dag():
         rest_loader.load_fcts()  # Вызываем функцию, которая перельет данные.
     fcts_dict = load_dm_fcts()
 
+    @task(task_id="dm_fcts_delivery_load")
+    def load_dm_fcts_delivery():
+        # создаем экземпляр класса, в котором реализована логика.
+        rest_loader = FctLoader_delivery(origin_pg_connect, dwh_pg_connect, log)
+        rest_loader.load_fcts()  # Вызываем функцию, которая перельет данные.
+    fcts_dict_delivery = load_dm_fcts_delivery()
 
-    users_dict>>restaurants_dict>>timestamps_dict>>products_dict>>orders_dict>>fcts_dict
+
+    [users_dict,restaurants_dict,couriers_dict,timestamps_dict,products_dict]>>orders_dict>>fcts_dict>>fcts_dict_delivery
 
 
 stg_bonus_system_users_dag = sprint5_dds_load_dag()

@@ -22,8 +22,8 @@ def sprint5_project_stg_load_dag():
     dwh_pg_connect = PostgresHook(postgres_conn_id='PG_WAREHOUSE_CONNECTION')
 
     # Объявляем таск, который создает структуру таблиц.
-    @task(task_id="load_delivery")
-    def stg_load_delivery():
+    @task(task_id="load_restaurants")
+    def stg_load_restaurants():
         print('ad')
         a = Loader()
         a.get_restaurants(dwh_pg_connect)
@@ -34,11 +34,18 @@ def sprint5_project_stg_load_dag():
         a = Loader()
         a.get_couriers(dwh_pg_connect)
 
+    @task(task_id="load_deliveries")
+    def stg_load_deliveries():
+        print('ad')
+        a = Loader()
+        a.get_deliveries(dwh_pg_connect)
+
     # Инициализируем объявленные таски.
-    stg_load_delivery = stg_load_delivery()
+    stg_load_restaurants = stg_load_restaurants()
     stg_load_couriers = stg_load_couriers()
+    stg_load_deliveries = stg_load_deliveries()
 
     # Задаем последовательность выполнения тасков. У нас только инициализация схемы.
-    stg_load_delivery >> stg_load_couriers
+    stg_load_restaurants >> stg_load_couriers >> stg_load_deliveries
 
 stg_api_load_dag = sprint5_project_stg_load_dag()
